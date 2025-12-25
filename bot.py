@@ -408,12 +408,10 @@ def handle_text(message):
 # ------------------------
 # 13. Запуск бота
 # ------------------------
-print("Бот запущений...")
-import time
-
-while True:
+if __name__ == '__main__':
+    print("🚀 Бот запущений (повністю безкоштовний)")
     try:
-        bot.polling(none_stop=True, interval=1, timeout=20)
+        bot.polling(none_stop=True, interval=0, timeout=20)
     except Exception as e:
-        print(f"Помилка polling: {e}")
+        print(f"❌ Polling error: {e}")
         time.sleep(5)
