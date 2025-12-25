@@ -14,7 +14,13 @@ import matplotlib.pyplot as plt
 # ------------------------
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+print(f"DEBUG: BOT_TOKEN length = {len(BOT_TOKEN) if BOT_TOKEN else 0}")
 
+if not BOT_TOKEN:
+    print("❌ ERROR: BOT_TOKEN not found! Check Railway Variables!")
+    exit(1)
+
+print("✅ Token OK, starting bot...")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ------------------------
