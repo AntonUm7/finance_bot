@@ -1,415 +1,189 @@
-import os
-import sqlite3
-from datetime import datetime
-from io import BytesIO
-import time
-
 import telebot
-from telebot import types
+import os
+import json
+import time
 from dotenv import load_dotenv
-import matplotlib.pyplot as plt
+from telebot import types
 
-# ------------------------
-# 1. Завантаження токена
-# ------------------------
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+print(f"DEBUG: BOT_TOKEN length = {len(BOT_TOKEN) if BOT_TOKEN else 0}")
+
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN not found!")
+    exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
+print("✅ Bot created!")
 
-# ------------------------
-# 2. База даних SQLite
-# ------------------------
-conn = sqlite3.connect('finances.db', check_same_thread=False)
-cur = conn.cursor()
+# Дані користувачів
+USERS_FILE = "users.json"
+user_states = {}
+users_data = {}
 
-cur.execute('''
-    CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        date TEXT,
-        amount REAL,
-        category TEXT,
-        description TEXT
-    )
-''')
-conn.commit()
-
-
-# ------------------------
-# 3. Допоміжні функції
-# ------------------------
-def main_reply_keyboard():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn_add = types.KeyboardButton("➕ Додати витрату")
-    btn_report = types.KeyboardButton("📊 Звіт")
-    btn_last = types.KeyboardButton("🧾 Остання витрата")
-    btn_chart = types.KeyboardButton("📈 Графік")
-    keyboard.add(btn_add, btn_report, btn_last, btn_chart)
-    return keyboard
-
-
-def try_parse_quick_expense(text: str):
-    parts = text.split()
-    if len(parts) < 2:
-        return None
+def load_users():
+    global users_data
     try:
-        amount = float(parts[0].replace(",", "."))
-    except ValueError:
-        return None
-    category = parts[1]
-    description = " ".join(parts[2:]) if len(parts) > 2 else ""
-    return amount, category, description
+        with open(USERS_FILE, 'r') as f:
+            users_data = json.load(f)
+    except:
+        users_data = {}
 
+def save_users():
+    with open(USERS_FILE, 'w') as f:
+        json.dump(users_data, f, indent=2)
 
-def save_expense(user_id, amount, category, description=""):
-    now = datetime.now()
-    date_str = now.strftime('%Y-%m-%d')
-    cur.execute('''
-        INSERT INTO transactions (user_id, date, amount, category, description)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, date_str, amount, category, description))
-    conn.commit()
+load_users()
 
+def get_user_data(user_id):
+    if str(user_id) not in users_data:
+        users_data[str(user_id)] = {"balance": 0, "history": [], "goals": {}}
+        save_users()
+    return users_data[str(user_id)]
 
-# ------------------------
-# 4. /start
-# ------------------------
 @bot.message_handler(commands=['start'])
 def start(message):
-    text = (
-        "Привіт! Я твій фінансовий асистент 💸\n\n"
-        "Я можу:\n"
-        "• зберігати витрати\n"
-        "• показувати звіти\n"
-        "• будувати графіки\n\n"
-        "Користуйся кнопками нижче!\n\n"
-        "Швидке додавання: просто напиши\n"
-        "`150 food супермаркет`"
-    )
-    bot.send_message(message.chat.id, text, reply_markup=main_reply_keyboard(), parse_mode='Markdown')
+    show_main_menu(message)
 
+@bot.message_handler(commands=['menu'])
+def menu(message):
+    show_main_menu(message)
 
-# ------------------------
-# 5. Діалог додавання витрати (від кнопки ➕)
-# ------------------------
-@bot.message_handler(func=lambda m: m.text == "➕ Додати витрату")
-def add_expense_wizard_start(message):
-    msg = bot.send_message(message.chat.id, "💰 Введи суму (тільки число, напр. 150.5):")
-    bot.register_next_step_handler(msg, add_expense_get_amount)
-
-
-def add_expense_get_amount(message):
-    try:
-        amount = float(message.text.replace(",", "."))
-    except ValueError:
-        msg = bot.send_message(message.chat.id, "❌ Не число. Спробуй ще раз:")
-        bot.register_next_step_handler(msg, add_expense_get_amount)
-        return
-
-    msg = bot.send_message(message.chat.id, "📂 Введи категорію (food, transport, fun):")
-    bot.register_next_step_handler(msg, add_expense_get_category, amount)
-
-
-def add_expense_get_category(message, amount):
-    category = message.text.strip()
-    msg = bot.send_message(message.chat.id, "📝 Опис (або '-' без опису):")
-    bot.register_next_step_handler(msg, add_expense_finish, amount, category)
-
-
-def add_expense_finish(message, amount, category):
-    description = message.text.strip()
-    if description == "-":
-        description = ""
-
-    save_expense(message.from_user.id, amount, category, description)
-    bot.reply_to(
-        message,
-        f"✅ Додано: {amount} грн ({category})\n"
-        f"Опис: {description or 'немає'}",
-        reply_markup=main_reply_keyboard()
-    )
-
-
-# ------------------------
-# 6. /add (команда)
-# ------------------------
-@bot.message_handler(commands=['add'])
-def add_expense_command(message):
-    parts = message.text.split()[1:]
-    if len(parts) < 2:
-        bot.reply_to(message, "Формат: /add 150 food супермаркет", reply_markup=main_reply_keyboard())
-        return
-
-    try:
-        amount = float(parts[0].replace(",", "."))
-        category = parts[1]
-        description = " ".join(parts[2:]) if len(parts) > 2 else ""
-        save_expense(message.from_user.id, amount, category, description)
-        bot.reply_to(
-            message,
-            f"✅ Додано: {amount} грн ({category})\n"
-            f"Опис: {description or 'немає'}",
-            reply_markup=main_reply_keyboard()
-        )
-    except ValueError:
-        bot.reply_to(message, "❌ Некоректна сума", reply_markup=main_reply_keyboard())
-
-
-# ------------------------
-# 7. /report
-# ------------------------
-@bot.message_handler(commands=['report'])
-def report(message):
+def show_main_menu(message):
     user_id = message.from_user.id
-    today = datetime.now().strftime('%Y-%m-%d')
-    month_prefix = datetime.now().strftime('%Y-%m')
+    user = get_user_data(user_id)
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_balance = types.InlineKeyboardButton(f"💰 Баланс: {user['balance']} грн", callback_data="balance")
+    btn_income = types.InlineKeyboardButton("➕ Дохід", callback_data="income")
+    btn_expense = types.InlineKeyboardButton("➖ Витрата", callback_data="expense")
+    btn_stats = types.InlineKeyboardButton("📊 Статистика", callback_data="stats")
+    
+    markup.add(btn_balance, btn_income, btn_expense, btn_stats)
+    bot.send_message(message.chat.id, "🎛️ Головне меню:", reply_markup=markup)
 
-    cur.execute('SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id = ? AND date = ?', (user_id, today))
-    today_sum = cur.fetchone()[0]
-
-    cur.execute('SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id = ? AND date LIKE ?',
-                (user_id, month_prefix + '%'))
-    month_sum = cur.fetchone()[0]
-
-    cur.execute('''
-        SELECT category, SUM(amount) as total
-        FROM transactions WHERE user_id = ? AND date LIKE ?
-        GROUP BY category ORDER BY total DESC LIMIT 5
-    ''', (user_id, month_prefix + '%'))
-    rows = cur.fetchall()
-
-    categories_text = "\n".join([f"• {cat}: {total:.0f} грн" for cat, total in rows]) if rows else "немає"
-
-    text = (
-        f"📊 Звіт\n\n"
-        f"Сьогодні: {today_sum:.0f} грн\n"
-        f"Місяць: {month_sum:.0f} грн\n\n"
-        f"Топ категорій:\n{categories_text}"
-    )
-    bot.reply_to(message, text, reply_markup=main_reply_keyboard())
-
-
-# ------------------------
-# 8. Остання витрата
-# ------------------------
-@bot.message_handler(commands=['last'])
-def last_transaction(message):
-    user_id = message.from_user.id
-    cur.execute('''
-        SELECT id, date, amount, category, description
-        FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 1
-    ''', (user_id,))
-    row = cur.fetchone()
-
-    if not row:
-        bot.reply_to(message, "📭 Витрат ще немає", reply_markup=main_reply_keyboard())
-        return
-
-    tr_id, date, amount, category, desc = row
-    text = f"🧾 Остання:\n{amount} грн • {category}\n{date}\n\n{desc or 'без опису'}"
-
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(
-        types.InlineKeyboardButton("✏️ Змінити", callback_data=f"edit:{tr_id}"),
-        types.InlineKeyboardButton("🗑 Видалити", callback_data=f"del:{tr_id}")
-    )
-    bot.send_message(message.chat.id, text, reply_markup=keyboard)
-
-
-# ------------------------
-# 9. Callback обробники
-# ------------------------
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
+    user_id = call.from_user.id
     data = call.data
-
-    if data.startswith("del:"):
-        tr_id = int(data.split(":")[1])
-        cur.execute('DELETE FROM transactions WHERE id = ?', (tr_id,))
-        conn.commit()
-        bot.edit_message_text("✅ Видалено", call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id, "Видалено")
-
-    elif data.startswith("edit:"):
-        tr_id = int(data.split(":")[1])
-        msg = bot.send_message(call.message.chat.id, "💰 Нова сума:")
-        bot.register_next_step_handler(msg, lambda m, tid=tr_id: edit_amount(m, tid))
+    
+    if data == "balance":
+        user = get_user_data(user_id)
         bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, f"💰 Твій баланс: **{user['balance']} грн**", parse_mode='Markdown')
+        
+    elif data == "income":
+        bot.answer_callback_query(call.id)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("💼 Зарплата", callback_data="income_salary"))
+        markup.add(types.InlineKeyboardButton("💰 Фріланс", callback_data="income_freelance"))
+        markup.add(types.InlineKeyboardButton("📈 Інвест", callback_data="income_invest"))
+        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_menu"))
+        bot.edit_message_text("➕ Вибери тип доходу:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        user_states[str(user_id)] = "waiting_income_amount"
+        
+    elif data == "expense":
+        bot.answer_callback_query(call.id)
+        show_expense_categories(call.message.chat.id, call.message.message_id)
+        
+    elif data == "stats":
+        show_stats(call.message.chat.id, user_id)
+        
+    elif data.startswith("expense_"):
+        category = data.replace("expense_", "")
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, f"➖ **{category}**\nВведи суму (наприклад: 150):")
+        user_states[str(user_id)] = f"waiting_expense_{category}"
+        
+    elif data.startswith("income_"):
+        category = data.replace("income_", "")
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, f"➕ **{category}**\nВведи суму (наприклад: 5000):")
+        user_states[str(user_id)] = f"waiting_income_{category}"
+        
+    elif data == "back_menu":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        show_main_menu(call.message)
+        
+def show_expense_categories(chat_id, message_id):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_food = types.InlineKeyboardButton("🍕 Їжа", callback_data="expense_Їжа")
+    btn_home = types.InlineKeyboardButton("🏠 Комуналка", callback_data="expense_Комуналка")
+    btn_med = types.InlineKeyboardButton("💊 Ліки", callback_data="expense_Ліки")
+    btn_other = types.InlineKeyboardButton("💳 Інше*", callback_data="expense_Інше")
+    btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")
+    
+    markup.add(btn_food, btn_home, btn_med, btn_other, btn_back)
+    bot.edit_message_text("➖ Вибери категорію витрат:", chat_id, message_id, reply_markup=markup)
 
+def show_stats(chat_id, user_id):
+    user = get_user_data(user_id)
+    total_income = sum(t['amount'] for t in user['history'] if t['type'] == 'income')
+    total_expense = sum(t['amount'] for t in user['history'] if t['type'] == 'expense')
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_menu"))
+    
+    stats_text = f"""📊 **Статистика:**
+💰 Баланс: {user['balance']} грн
+📈 Дохід: {total_income} грн
+📉 Витрати: {total_expense} грн
+💹 Результ: {total_income - total_expense} грн"""
+    
+    bot.send_message(chat_id, stats_text, parse_mode='Markdown', reply_markup=markup)
 
-def edit_amount(message, tr_id):
-    try:
-        new_amount = float(message.text.replace(",", "."))
-        cur.execute('UPDATE transactions SET amount = ? WHERE id = ?', (new_amount, tr_id))
-        conn.commit()
-        bot.reply_to(message, f"✅ Оновлено на {new_amount} грн", reply_markup=main_reply_keyboard())
-    except ValueError:
-        bot.reply_to(message, "❌ Тільки число", reply_markup=main_reply_keyboard())
-
-
-# ------------------------
-# 10. Графік
-# ------------------------
-@bot.message_handler(commands=['chart'])
-def chart(message):
-    user_id = message.from_user.id
-    cur.execute('''
-        SELECT date, SUM(amount) FROM transactions 
-        WHERE user_id = ? GROUP BY date ORDER BY date DESC LIMIT 7
-    ''', (user_id,))
-    rows = cur.fetchall()
-
-    if not rows:
-        bot.reply_to(message, "📊 Даних для графіка немає", reply_markup=main_reply_keyboard())
+@bot.message_handler(func=lambda message: True)
+def handle_states(message):
+    user_id = str(message.from_user.id)
+    
+    if user_id in user_states:
+        state = user_states[user_id]
+        
+        try:
+            if state.startswith("waiting_income_"):
+                category = state.replace("waiting_income_", "")
+                amount = float(message.text)
+                user = get_user_data(message.from_user.id)
+                user['balance'] += amount
+                user['history'].append({"type": "income", "category": category, "amount": amount, "date": time.strftime("%Y-%m-%d")})
+                save_users()
+                bot.reply_to(message, f"✅ +{amount} грн ({category})\n💰 Баланс: {user['balance']} грн")
+                
+            elif state.startswith("waiting_expense_"):
+                category = state.replace("waiting_expense_", "")
+                if category == "Інше":
+                    bot.reply_to(message, f"💳 **Інше ({category})**\nОпиши що купив (кава, кіно):")
+                    user_states[user_id] = "waiting_other_description"
+                    return
+                
+                amount = float(message.text)
+                user = get_user_data(message.from_user.id)
+                user['balance'] -= amount
+                user['history'].append({"type": "expense", "category": category, "amount": amount, "date": time.strftime("%Y-%m-%d")})
+                save_users()
+                bot.reply_to(message, f"✅ -{amount} грн ({category})\n💰 Баланс: {user['balance']} грн")
+                
+            elif state == "waiting_other_description":
+                amount_desc = user_states.get(f"{user_id}_temp", "")
+                desc = message.text
+                amount = float(amount_desc)
+                user = get_user_data(message.from_user.id)
+                user['balance'] -= amount
+                user['history'].append({"type": "expense", "category": "Інше", "description": desc, "amount": amount, "date": time.strftime("%Y-%m-%d")})
+                save_users()
+                bot.reply_to(message, f"✅ -{amount} грн (Інше: {desc})\n💰 Баланс: {user['balance']} грн")
+                
+        except ValueError:
+            bot.reply_to(message, "❌ Введи число! (150, 5000)")
+            
+        del user_states[user_id]
+        if f"{user_id}_temp" in user_states:
+            del user_states[f"{user_id}_temp"]
         return
+    
+    bot.reply_to(message, "👆 Використовуй /menu або кнопки!")
 
-    rows = list(reversed(rows))
-    dates = [r[0] for r in rows]
-    amounts = [r[1] for r in rows]
-
-    plt.figure(figsize=(8, 4))
-    plt.plot(dates, amounts, marker='o', linewidth=2)
-    plt.title('Витрати за 7 днів')
-    plt.ylabel('грн')
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-
-    buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    buf.seek(0)
-    plt.close()
-
-    bot.send_photo(message.chat.id, buf, caption="📈 Твої витрати")
-    buf.close()
-
-
-# ------------------------
-# 11. Кнопки
-# ------------------------
-@bot.message_handler(func=lambda m: m.text in ["📊 Звіт", "🧾 Остання витрата", "📈 Графік"])
-def handle_buttons(message):
-    text = message.text
-    if text == "📊 Звіт":
-        report(message)
-    elif text == "🧾 Остання витрата":
-        last_transaction(message)
-    elif text == "📈 Графік":
-        chart(message)
-
-
-# ------------------------
-# 12. Швидке додавання (150 food супермаркет)
-# ------------------------
-@bot.message_handler(
-    func=lambda m: not m.text.startswith('/') and m.text not in ["➕ Додати витрату", "📊 Звіт", "🧾 Остання витрата",
-                                                                 "📈 Графік"])
-def handle_quick_add(message):
-    parsed = try_parse_quick_expense(message.text.strip())
-    if parsed:
-        amount, category, description = parsed
-        save_expense(message.from_user.id, amount, category, description)
-        bot.reply_to(
-            message,
-            f"✅ Додано: {amount} грн ({category})\n"
-            f"{description or 'без опису'}",
-            reply_markup=main_reply_keyboard()
-        )
-    else:
-        bot.reply_to(
-            message,
-            "❓ Не зрозумів. Пиши:\n"
-            "`150 food супермаркет`\n"
-            "або використовуй кнопки",
-            reply_markup=main_reply_keyboard(),
-            parse_mode='Markdown'
-        )
-
-
-# ------------------------
-# 13. Стабільний запуск
-# ------------------------
-print("🚀 Бот запущений (повністю безкоштовний)")
-while True:
-    try:
-        bot.polling(none_stop=True, interval=2, timeout=20)
-    except Exception as e:
-        print(f"⚠️ Помилка: {e}. Перезапуск через 5 сек...")
-        time.sleep(5)
-
-
-# ------------------------
-# 12. Відповіді ШІ на вільний текст
-# ------------------------
-@bot.message_handler(func=lambda m: not m.text.startswith('/'))
-@bot.message_handler(func=lambda m: not m.text.startswith('/'))
-def handle_text(message):
-    user_text = message.text.strip()
-
-    # 1) спочатку пробуємо, чи це «швидка витрата» типу "150 food супермаркет"
-    parsed = try_parse_quick_expense(user_text)
-    if parsed is not None:
-        amount, category, description = parsed
-
-        now = datetime.now()
-        date_str = now.strftime('%Y-%m-%d')
-
-        cur.execute(
-            '''
-            INSERT INTO transactions (user_id, date, amount, category, description)
-            VALUES (?, ?, ?, ?, ?)
-            ''',
-            (message.from_user.id, date_str, amount, category, description)
-        )
-        conn.commit()
-
-        bot.reply_to(
-            message,
-            f"✅ Додано витрату: {amount} грн, категорія: {category}.\n"
-            f"Опис: {description if description else 'немає'}",
-            reply_markup=main_reply_keyboard()
-        )
-        return
-
-    # 2) якщо це не витрата – відповідаємо як фінансовий ШІ
-    prompt = (
-        "Ти фінансовий асистент. Коротко і по суті відповідай українською.\n\n"
-        f"Запит користувача: {user_text}"
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Ти дружній фінансовий асистент."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=300,
-            temperature=0.7,
-        )
-
-        answer = response.choices[0].message.content.strip()
-        bot.reply_to(message, answer, reply_markup=main_reply_keyboard())
-    except Exception:
-        bot.reply_to(
-            message,
-            "Не вдалося відповісти за допомогою ШІ. Спробуй ще раз трохи пізніше.",
-            reply_markup=main_reply_keyboard()
-        )
-
-
-# ------------------------
-# 13. Запуск бота
-# ------------------------
-print("Бот запущений...")
-import time
-
-while True:
-    try:
-        bot.polling(none_stop=True, interval=1, timeout=20)
-    except Exception as e:
-        print(f"Помилка polling: {e}")
-        time.sleep(5)
+print("🚀 Starting polling...")
+bot.polling(none_stop=True, interval=0)
 
 
