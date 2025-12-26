@@ -148,38 +148,52 @@ def handle_states(message):
                 user['history'].append({"type": "income", "category": category, "amount": amount, "date": time.strftime("%Y-%m-%d")})
                 save_users()
                 bot.reply_to(message, f"✅ +{amount} грн ({category})\n💰 Баланс: {user['balance']} грн")
+                del user_states[user_id]
                 
             elif state.startswith("waiting_expense_"):
                 category = state.replace("waiting_expense_", "")
+                
                 if category == "Інше":
-                    bot.reply_to(message, f"💳 **Інше ({category})**\nОпиши що купив (кава, кіно):")
+                    # Зберігаємо суму тимчасово
+                    user_states[f"{user_id}_temp_amount"] = message.text
+                    bot.reply_to(message, f"💳 **Інше**\nОпиши що купив (кава, кіно, подарунок):")
                     user_states[user_id] = "waiting_other_description"
                     return
                 
+                # Звичайні категорії
                 amount = float(message.text)
                 user = get_user_data(message.from_user.id)
                 user['balance'] -= amount
                 user['history'].append({"type": "expense", "category": category, "amount": amount, "date": time.strftime("%Y-%m-%d")})
                 save_users()
                 bot.reply_to(message, f"✅ -{amount} грн ({category})\n💰 Баланс: {user['balance']} грн")
+                del user_states[user_id]
                 
             elif state == "waiting_other_description":
-                amount_desc = user_states.get(f"{user_id}_temp", "")
+                # Отримуємо збережену суму
+                temp_amount = user_states.get(f"{user_id}_temp_amount", "0")
+                amount = float(temp_amount)
                 desc = message.text
-                amount = float(amount_desc)
                 user = get_user_data(message.from_user.id)
                 user['balance'] -= amount
                 user['history'].append({"type": "expense", "category": "Інше", "description": desc, "amount": amount, "date": time.strftime("%Y-%m-%d")})
                 save_users()
                 bot.reply_to(message, f"✅ -{amount} грн (Інше: {desc})\n💰 Баланс: {user['balance']} грн")
-                
+                # Очищуємо стани
+                del user_states[user_id]
+                if f"{user_id}_temp_amount" in user_states:
+                    del user_states[f"{user_id}_temp_amount"]
+                    
         except ValueError:
-            bot.reply_to(message, "❌ Введи число! (150, 5000)")
-            
-        del user_states[user_id]
-        if f"{user_id}_temp" in user_states:
-            del user_states[f"{user_id}_temp"]
+            bot.reply_to(message, "❌ Введи число для суми! (150, 5000)")
+            if state == "waiting_other_description":
+                bot.reply_to(message, "Опиши покупку (кава, кіно):")
+            return
+        
         return
+    
+    show_main_menu(message)
+
     
     bot.reply_to(message, "👆 Використовуй /menu або кнопки!")
 
